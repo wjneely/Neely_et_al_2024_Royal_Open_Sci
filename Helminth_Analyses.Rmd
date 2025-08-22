@@ -1,0 +1,344 @@
+---
+title: "R script: Host-associated helminth diversity and microbiome composition contribute to anti-pathogen defences in tropical frogs impacted by forest fragmentation"
+author: "Wesley J. Neely"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Setup
+
+```{r setup, warning = FALSE, message = FALSE}
+
+#Load packages
+library(tidyverse)
+library(vegan)
+library(phytools)
+library(grid)
+library(gridExtra)
+library(ggpubr)
+library(piecewiseSEM)
+library(nlme)
+library(glmmTMB)
+library(rstatix)
+library(MuMIn)
+
+```
+
+# Calculate Helminth Diversity
+
+```{r helminth div}
+
+#Import and subset data
+Data <- read_csv("Helminth_Data.csv")
+Data_helminth <- Data[,-c(1:60)]
+
+Data_Taxon <- read_csv("Helminth_Taxon.csv")
+
+DivData.log <- log(Data_helminth+1)
+
+#Calculate diversity (Richness, Shannon, and Taxonomic)
+DATA <- as.data.frame(Data_Taxon)
+rownames(DATA) <- DATA[, 1]
+pardist <- taxa2dist(DATA[, -1], varstep = FALSE, check = TRUE)
+alt <- taxondive(DivData.log, pardist)
+
+#Add columns with metrics to data
+Data_helminth$Richness <- alt$Species
+Data_helminth$Tax.Div <- alt$D
+Data_helminth$Tax.Dist <- alt$Dstar
+Data_helminth$Shannon <- diversity(DivData.log, index = "shannon", MARGIN = 1, base = exp(1))
+
+```
+
+# PERMANOVA
+## Data import and analysis
+```{r PERMANOVA}
+
+#Import ASV table data
+Data_ASV <- read_csv("Helminth_FullASVtable.csv")
+
+#Remove any non-ASV columns and create a distance matrices
+Data2 <- filter(Data_ASV, Rarefied == "N")
+Data2_gut <- filter(Data2, Sample_Type == "Gut")
+Data2_skin <- filter(Data2, Sample_Type == "Skin")
+
+d_gut <- Data2_gut[-c(1:7)]
+BCdm_gut <- vegdist(d_gut, method = "bray")
+BCD_gut <- as.matrix(BCdm_gut)
+
+Jadm_gut <- vegdist(d_gut, method = "jaccard")
+JaD_gut <- as.matrix(Jadm_gut)
+
+d_skin <- Data2_skin[-c(1:7)]
+BCdm_skin <- vegdist(d_skin, method = "bray")
+BCD_skin <- as.matrix(BCdm_skin)
+
+Jadm_skin <- vegdist(d_skin, method = "jaccard")
+JaD_skin <- as.matrix(Jadm_skin)
+
+d_helminth <- Data_helminth[-c(12:15)]
+BCdm_helminth <- vegdist(d_helminth, method = "bray")
+BCD_helminth <- as.matrix(BCdm_helminth)
+#Calculate Bray-Curtis PCo axes
+BC_PCoA_helminth <- cmdscale(BCD_helminth, eig = TRUE)
+print(BC_PCoA_helminth)
+
+Jadm_helminth <- vegdist(d_helminth, method = "jaccard")
+JaD_helminth <- as.matrix(Jadm_helminth)
+#Calculate Jaccard PCo axes
+Ja_PCoA_helminth <- cmdscale(JaD_helminth, eig = TRUE)
+print(Ja_PCoA_helminth)
+
+
+#Run using the adonis2 function 
+
+adonis2(BCD_gut ~ Habitat, data = Data2_gut, by = "margin")
+adonis2(BCD_skin ~ Habitat, data = Data2_skin, by = "margin")
+adonis2(BCD_helminth ~ Habitat, data = Data, by = "margin")
+
+adonis2(BCD_gut ~ Bd_Bin, strata=Data2_gut$Habitat, data = Data2_gut, by = "margin")
+adonis2(BCD_skin ~ Bd_Bin, strata=Data2_skin$Habitat, data = Data2_skin, by = "margin")
+adonis2(BCD_helminth ~ Bd_Bin, strata=Data$Habitat, data = Data, by = "margin")
+
+adonis2(JaD_gut ~ Habitat, data = Data2_gut, by = "margin")
+adonis2(JaD_skin ~ Habitat, data = Data2_skin, by = "margin")
+adonis2(JaD_helminth ~ Habitat, data = Data, by = "margin")
+
+adonis2(JaD_gut ~ Bd_Bin, strata=Data2_gut$Habitat, data = Data2_gut, by = "margin")
+adonis2(JaD_skin ~ Bd_Bin, strata=Data2_skin$Habitat, data = Data2_skin, by = "margin")
+adonis2(JaD_helminth ~ Bd_Bin, strata=Data$Habitat, data = Data, by = "margin")
+
+```
+
+## Spider plots (Bray-Curtis)
+```{r PERMANOVA BCplots}
+
+#Skin microbial community
+##Create a centroid for each group
+centroid_skin <- merge(Data,aggregate(cbind(mean.x=BC_PC1_skin,mean.y=BC_PC2_skin)~
+                                           Habitat,Data,mean),by=cbind("Habitat"))
+
+##Plot using ggplot2
+Spider_Plot_skin <- centroid_skin %>%
+  ggplot(aes(BC_PC1_skin,BC_PC2_skin,color=factor(Habitat)))+
+  geom_point(size=4, alpha=0.75, stroke = 0)+
+  geom_point(size=8, aes(x=mean.x,y=mean.y))+
+  geom_segment(linewidth=1, alpha=0.5, aes(x=mean.x, y=mean.y, xend=BC_PC1_skin, yend=BC_PC2_skin))+
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  guides(color=guide_legend(title=NULL)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        legend.text = element_text(size=16),
+        legend.title = element_blank(),
+        axis.line = element_line(linewidth = 1, linetype = "solid"),
+        axis.ticks = element_line(linewidth = 1, linetype = "solid"))
+Spider_Plot_skin
+
+#Gut microbial community
+centroid_gut <- merge(Data,aggregate(cbind(mean.x=BC_PC1_gut,mean.y=BC_PC2_gut)~Habitat,Data,mean),
+                       by=cbind("Habitat"))
+Spider_Plot_gut <- centroid_gut %>%
+  ggplot(aes(BC_PC1_gut,BC_PC2_gut,color=factor(Habitat)))+
+  geom_point(size=4, alpha=0.75, stroke = 0)+
+  geom_point(size=8, aes(x=mean.x,y=mean.y))+
+  geom_segment(linewidth=1, alpha=0.5, aes(x=mean.x, y=mean.y, xend=BC_PC1_gut, yend=BC_PC2_gut))+
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  guides(color=guide_legend(title=NULL)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        legend.text = element_text(size=16),
+        legend.title = element_blank(),
+        axis.line = element_line(linewidth = 1, linetype = "solid"),
+        axis.ticks = element_line(linewidth = 1, linetype = "solid"))
+Spider_Plot_gut
+
+#Helminth community
+centroid_helminth <- merge(Data,aggregate(cbind(mean.x=Helm_BCPCo1,mean.y=Helm_BCPCo2)~Habitat,
+                                             Data,mean), by=cbind("Habitat"))
+Spider_Plot_helminth <- centroid_helminth %>%
+  ggplot(aes(Helm_BCPCo1,Helm_BCPCo2,color=factor(Habitat)))+
+  geom_point(size=4, alpha=0.75, stroke = 0)+
+  geom_point(size=8, aes(x=mean.x,y=mean.y))+
+  geom_segment(linewidth=1, alpha=0.5, aes(x=mean.x, y=mean.y, xend=Helm_BCPCo1, yend=Helm_BCPCo2))+
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  guides(color=guide_legend(title=NULL)) +
+  theme_classic() +
+  xlab("BCPCo1") + ylab("BCPCo2") +
+  theme(axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        legend.text = element_text(size=16),
+        legend.title = element_blank(),
+        axis.line = element_line(linewidth = 1, linetype = "solid"),
+        axis.ticks = element_line(linewidth = 1, linetype = "solid"))
+Spider_Plot_helminth
+
+#Arrange plots for publication
+ggarrange(Spider_Plot_skin, Spider_Plot_gut, Spider_Plot_helminth, ncol = 3, nrow = 1, 
+          labels = c("A","B","C"), common.legend = TRUE, legend = "right")
+
+```
+
+## Spider plots (Jaccard)
+```{r PERMANOVA Japlots}
+
+centroid_skin2 <- merge(Data,aggregate(cbind(mean.x=Ja_PC1_skin,mean.y=Ja_PC2_skin)~
+                                            Habitat,Data,mean), by=cbind("Habitat"))
+Spider_Plot_skin2 <- centroid_skin2 %>%
+  ggplot(aes(Ja_PC1_skin,Ja_PC2_skin,color=factor(Habitat)))+
+  geom_point(size=4, alpha=0.75, stroke = 0)+
+  geom_point(size=8, aes(x=mean.x,y=mean.y))+
+  geom_segment(linewidth=1, alpha=0.5, aes(x=mean.x, y=mean.y, xend=Ja_PC1_skin, yend=Ja_PC2_skin))+
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  guides(color=guide_legend(title=NULL)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        legend.text = element_text(size=16),
+        legend.title = element_blank(),
+        axis.line = element_line(linewidth = 1, linetype = "solid"),
+        axis.ticks = element_line(linewidth = 1, linetype = "solid"))
+Spider_Plot_skin2
+
+centroid_gut2 <- merge(Data,aggregate(cbind(mean.x=Ja_PC1_gut,mean.y=Ja_PC2_gut)~Habitat,Data,mean),
+                      by=cbind("Habitat"))
+Spider_Plot_gut2 <- centroid_gut2 %>%
+  ggplot(aes(Ja_PC1_gut,Ja_PC2_gut,color=factor(Habitat)))+
+  geom_point(size=4, alpha=0.75, stroke = 0)+
+  geom_point(size=8, aes(x=mean.x,y=mean.y))+
+  geom_segment(linewidth=1, alpha=0.5, aes(x=mean.x, y=mean.y, xend=Ja_PC1_gut, yend=Ja_PC2_gut))+
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  guides(color=guide_legend(title=NULL)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        legend.text = element_text(size=16),
+        legend.title = element_blank(),
+        axis.line = element_line(linewidth = 1, linetype = "solid"),
+        axis.ticks = element_line(linewidth = 1, linetype = "solid"))
+Spider_Plot_gut2
+
+centroid_helminth2 <- merge(Data,aggregate(cbind(mean.x=Helm_JaPCo1,mean.y=Helm_JaPCo2)~Habitat,
+                                             Data,mean), by=cbind("Habitat"))
+Spider_Plot_helminth2 <- centroid_helminth2 %>%
+  ggplot(aes(Helm_JaPCo1,Helm_JaPCo2,color=factor(Habitat)))+
+  geom_point(size=4, alpha=0.75, stroke = 0)+
+  geom_point(size=8, aes(x=mean.x,y=mean.y))+
+  geom_segment(linewidth=1, alpha=0.5, aes(x=mean.x, y=mean.y, xend=Helm_JaPCo1, yend=Helm_JaPCo2))+
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  guides(color=guide_legend(title=NULL)) +
+  theme_classic() +
+  xlab("JaPCo1") + ylab("JaPCo2") +
+  theme(axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        legend.text = element_text(size=16),
+        legend.title = element_blank(),
+        axis.line = element_line(linewidth = 1, linetype = "solid"),
+        axis.ticks = element_line(linewidth = 1, linetype = "solid"))
+Spider_Plot_helminth2
+
+ggarrange(Spider_Plot_skin2, Spider_Plot_gut2, Spider_Plot_helminth2, ncol = 3, nrow = 1, 
+          labels = c("A","B","C"), common.legend = TRUE, legend = "right")
+
+```
+
+# Forest cover comparisons
+
+```{r glms}
+
+Mass.test <- glmmTMB(Mass ~ Habitat + (1|Site), family=gaussian(), data = Data)
+summary(Mass.test)
+
+SVL.test <- glmmTMB(SVL ~ Habitat + (1|Site), family=gaussian(), data = Data)
+summary(SVL.test)
+
+BdPA.test <- glmmTMB(Bd_01 ~ Habitat + (1|Site), family=binomial(link='logit'), data = Data)
+summary(BdPA.test)
+
+BdLoad.test <- glmmTMB(Bd_mass_Log ~ Habitat + (1|Site), ziformula=~1, family=nbinom2(), data = Data)
+summary(BdLoad.test)
+
+ASVSkinRich.test <- glmmTMB(observed_skin ~ Habitat + (1|Site), family=poisson(), data = Data)
+summary(ASVSkinRich.test)
+
+ASVGutRich.test <- glmmTMB(observed_gut ~ Habitat + (1|Site), family=poisson(), data = Data)
+summary(ASVGutRich.test)
+
+```
+
+## Boxplots
+```{r boxplot}
+#Density plots showing distributions
+ggplot(Data, aes(x=Mass, color=Habitat)) +
+  geom_density(linewidth=1) +
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  theme_classic()
+
+ggplot(Data, aes(x=SVL, color=Habitat)) +
+  geom_density(linewidth=1) +
+  scale_color_manual(values = c("#468672","#A0522D")) +
+  theme_classic()
+
+#Boxplots with jittered points
+Mass_plot <- Data %>%
+  ggplot(aes(Habitat, Mass, fill = Habitat))+
+  geom_boxplot(notch=FALSE) +
+  geom_jitter(position=position_jitter(0.1))+
+  scale_fill_manual(values = c("#468672","#A0522D")) +
+  theme_classic()
+Mass_plot
+
+SVL_plot <- Data %>%
+  ggplot(aes(Habitat, SVL, fill = Habitat))+
+  geom_boxplot(notch=FALSE) +
+  geom_jitter(position=position_jitter(0.1))+
+  scale_fill_manual(values = c("#468672","#A0522D")) +
+  theme_classic()
+SVL_plot
+
+ggarrange(Mass_plot, SVL_plot, ncol = 2, nrow = 1,
+          labels = c("A","B"), common.legend = TRUE) 
+
+```
+# Model selection
+
+```{r model selection}
+
+subset_Data <- Data[-c(10:11),]
+
+global_model <- glm(Bd_mass_Log ~ observed_skin + observed_gut + skin_BCdispersion + 
+                        gut_BCdispersion + Inhib_Prop_skin + Helm_Log + Helm_Tax.Div + 
+                        Habitat2,
+                      family=gaussian(),
+                      na.action = "na.fail",
+                      data = subset_Data)
+
+dredged_models <- dredge(global_model, rank = "AICc", extra = "R^2")
+
+dredged_models_df <- as.data.frame(dredged_models)
+#write_csv(dredged_models,"dredged_models.csv")
+
+top_model <- glmmTMB(Bd_mass_Log ~ gut_BCdispersion + Inhib_Prop_skin + 
+                     Helm_Tax.Div + (1|Site),
+                     ziformula=~1,
+                     family=nbinom2(),
+                     data = subset_Data)
+summary(top_model)
+
+
+```
+
+
