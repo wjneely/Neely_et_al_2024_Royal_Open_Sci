@@ -1,0 +1,973 @@
+---
+title: "R Script for Network Analysis: Host-associated helminth diversity and microbiome composition contribute to anti-pathogen defences in tropical frogs impacted by forest fragmentation"
+author: "Wesley J. Neely"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r knitr, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Following scripts by Feng Ju (Ju et al., 2014, Environmental Microbiology):
+### https://github.com/RichieJu520/Co-occurrence_Network_Analysis/blob/master/1.Pairwise_correlations.R
+### https://github.com/RichieJu520/Co-occurrence_Network_Analysis/blob/master/4.Random_network_simulator.R
+
+# Setup
+
+```{r Setup, warning = FALSE, message = FALSE}
+# Load packages
+library(tidyverse)
+library(vegan)
+library(devtools)
+library(smacof)
+library(ggpubr)
+library(igraph)
+library(Hmisc)
+library(Matrix)
+library(ggraph)
+library(multcompView)
+library(DiagrammeR)
+library(RColorBrewer)
+
+```
+
+# Data Import
+
+```{r data import, message=FALSE, warning=FALSE}
+
+# Import and subset data
+
+## Skin ASV tables
+asv_table_skin <- read_csv("OTU_table_skin2.csv")
+head(asv_table_skin)
+
+asv_table_skinCont<-read_csv("OTU_table_skin2Cont.csv")
+asv_table_skinFrag<-read_csv("OTU_table_skin2Frag.csv")
+
+### Transposed data for matching taxonomy
+skin_transposed <- read_csv("otu_table_skin2_transposed.csv")
+head(skin_transposed)
+
+skinCont_transposed <- read_csv("otu_table_skin2Cont_transposed.csv")
+skinFrag_transposed <- read_csv("otu_table_skin2Frag_transposed.csv")
+
+## Gut ASV tables
+asv_table_gut <- read_csv("OTU_table_gut2_ra.csv")
+head(asv_table_gut)
+
+asv_table_gutCont<-read_csv("OTU_table_gut2Cont.csv")
+asv_table_gutFrag<-read_csv("OTU_table_gut2Frag.csv")
+
+### Transposed data for matching taxonomy
+gut_transposed <- read_csv("otu_table_gut2_transposed.csv")
+head(gut_transposed)
+
+gutCont_transposed <- read_csv("otu_table_gut2Cont_transposed.csv")
+gutFrag_transposed <- read_csv("otu_table_gut2Frag_transposed.csv")
+
+## Taxonomy table
+tax <- read_csv("ASV_taxonomy.csv")
+head(tax)
+
+### Subset taxonomy to include only ASVs found in skin samples
+tax_skin <- tax[which(tax$Taxon %in% skin_transposed$FrogID),]
+tax_skin <- droplevels(tax_skin)
+
+#### Print a list of the unique phyla for use in later plots
+unique(tax_skin$Phylum)
+
+### Subset taxonomy to include only ASVs found in gut samples
+tax_gut <- tax[which(tax$Taxon %in% gut_transposed$FrogID),]
+tax_gut <- droplevels(tax_gut)
+
+#### Print a list of the unique phyla for use in later plots
+unique(tax_gut$Phylum)
+
+## Taxonomy table without helminths
+tax_noHelm <- tax[-c(1:6),]
+head(tax_noHelm)
+
+### Subset taxonomy without helminths to include only ASVs found in skin samples
+tax_skin_noHelm <- tax_noHelm[which(tax_noHelm$Taxon %in% skin_transposed$FrogID),]
+tax_skin_noHelm <- droplevels(tax_skin_noHelm)
+
+tax_skin_noHelmCont <- tax_noHelm[which(tax_noHelm$Taxon %in% skinCont_transposed$FrogID),]
+tax_skin_noHelmCont <- droplevels(tax_skin_noHelmCont)
+
+tax_skin_noHelmFrag <- tax_noHelm[which(tax_noHelm$Taxon %in% skinFrag_transposed$FrogID),]
+tax_skin_noHelmFrag <- droplevels(tax_skin_noHelmFrag)
+
+#### Print a list of the unique phyla for use in later plots
+unique(tax_skin_noHelmCont$Phylum)
+unique(tax_skin_noHelmFrag$Phylum)
+
+### Subset taxonomy without helminths to include only ASVs found in gut samples
+tax_gut_noHelm <- tax_noHelm[which(tax_noHelm$Taxon %in% gut_transposed$FrogID),]
+tax_gut_noHelm <- droplevels(tax_gut_noHelm)
+
+tax_gut_noHelmCont <- tax_noHelm[which(tax_noHelm$Taxon %in% gutCont_transposed$FrogID),]
+tax_gut_noHelmCont <- droplevels(tax_gut_noHelmCont)
+
+tax_gut_noHelmFrag <- tax_noHelm[which(tax_noHelm$Taxon %in% gutFrag_transposed$FrogID),]
+tax_gut_noHelmFrag <- droplevels(tax_gut_noHelmFrag)
+
+#### Print a list of the unique phyla for use in later plots
+unique(tax_gut_noHelmCont$Phylum)
+unique(tax_gut_noHelmFrag$Phylum)
+
+```
+
+# Network analysis
+## Network functions
+```{r network functions}
+
+co_occurrence_network_gut <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_gut[,-c(1:13)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_gut_noHelm[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val <- asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+
+  #AESTHETICS
+  V(net.grph)$color <- tax_gut_noHelm$Phylum
+  V(net.grph)$names <- tax_gut_noHelm$Phylum
+ 
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#74aff3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#FFD92F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Synergistota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Euryarchaeota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Fusobacteriota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deferribacterota","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Desulfobacterota","#feb786",V(net.grph)$color)
+  V(net.grph)$color=gsub("Spirochaetota","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#4DAF4A",V(net.grph)$color)
+  
+  edgew <- E(net.grph)$weight
+
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+  legend(x=-2.5, y=1.1,
+       c("Proteobacteria","Firmicutes","Bacteroidota","Actinobacteriota",
+         "Planctomycetota","Verrucomicrobiota","Myxococcota","Synergistota",
+         "Euryarchaeota","Fusobacteriota","Deferribacterota","Desulfobacterota",
+         "Spirochaetota", "Cyanobacteria"),
+       col = c("#386CB0", "#74aff3", "#B3CDE3",
+               "#FFD92F", "#CAB2D6", "#0a4f4e",
+               "#B3DE69", "#7570B3", "#A65628",
+               "#66C2A5", "#6975fe", "#feb786",
+               "#BC80BD", "#4DAF4A"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+
+co_occurrence_network_gutCont <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_gutCont[,-c(1:7)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_gut_noHelmCont[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val <- asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+  
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_gut_noHelmCont$Phylum
+  V(net.grph)$names <- tax_gut_noHelmCont$Phylum
+ 
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#74aff3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#FFD92F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Synergistota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Euryarchaeota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Fusobacteriota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deferribacterota","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Desulfobacterota","#feb786",V(net.grph)$color)
+  V(net.grph)$color=gsub("Spirochaetota","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#4DAF4A",V(net.grph)$color)
+  
+  edgew <- E(net.grph)$weight
+
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+  legend(x=-2.5, y=1.1,
+       c("Proteobacteria","Firmicutes","Bacteroidota","Actinobacteriota",
+         "Planctomycetota","Verrucomicrobiota","Synergistota",
+         "Euryarchaeota","Fusobacteriota","Deferribacterota","Desulfobacterota",
+         "Spirochaetota", "Cyanobacteria"),
+       col = c("#386CB0", "#74aff3", "#B3CDE3",
+               "#FFD92F", "#CAB2D6", "#0a4f4e",
+               "#7570B3", "#A65628",
+               "#66C2A5", "#6975fe", "#feb786",
+               "#BC80BD", "#4DAF4A"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+
+co_occurrence_network_gutFrag <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_gutFrag[,-c(1:7)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_gut_noHelmFrag[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val = asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+  
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_gut_noHelmFrag$Phylum
+  V(net.grph)$names <- tax_gut_noHelmFrag$Phylum
+ 
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#74aff3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#FFD92F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Synergistota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Euryarchaeota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Fusobacteriota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deferribacterota","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Desulfobacterota","#feb786",V(net.grph)$color)
+
+  edgew <- E(net.grph)$weight
+
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+  legend(x=-2.5, y=1.1,
+       c("Proteobacteria","Firmicutes","Bacteroidota","Actinobacteriota",
+         "Planctomycetota","Verrucomicrobiota","Myxococcota","Synergistota",
+         "Euryarchaeota","Fusobacteriota","Deferribacterota","Desulfobacterota"),
+       col = c("#386CB0", "#74aff3", "#B3CDE3",
+               "#FFD92F", "#CAB2D6", "#0a4f4e",
+               "#B3DE69", "#7570B3", "#A65628",
+               "#66C2A5", "#6975fe", "#feb786"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+
+co_occurrence_network_gut_wHelm <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_gut[,-c(1:7)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_gut[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val = asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_gut$Phylum
+  V(net.grph)$names <- tax_gut$Phylum
+  V(net.grph)$shape <- tax_gut$Domain
+
+  V(net.grph)$color=gsub("Nematoda","#E41A1C",V(net.grph)$color)
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#74aff3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#FFD92F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Synergistota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Euryarchaeota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Fusobacteriota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deferribacterota","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Desulfobacterota","#feb786",V(net.grph)$color)
+  V(net.grph)$color=gsub("Spirochaetota","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#4DAF4A",V(net.grph)$color)
+  
+  V(net.grph)$shape=gsub("Cosmocercidae","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Oxyascaris similis","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Raillietinema sp.","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Oswaldocruzia subauricularis","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Ochoterenella sp","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Rhabdias sp","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Bacteria","circle",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Archaea","circle",V(net.grph)$shape)
+
+  edgew <- E(net.grph)$weight
+  #label1 <- tax_gut$Species
+
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+
+   legend(x=-2.5, y=1.1,
+       c("Nematoda","Proteobacteria","Firmicutes","Bacteroidota","Actinobacteriota",
+         "Planctomycetota","Verrucomicrobiota","Myxococcota","Synergistota",
+         "Euryarchaeota","Fusobacteriota","Deferribacterota","Desulfobacterota",
+         "Spirochaetota", "Cyanobacteria"),
+       col = c("#E41A1C","#386CB0", "#74aff3", "#B3CDE3",
+               "#FFD92F", "#CAB2D6", "#0a4f4e",
+               "#B3DE69", "#7570B3", "#A65628",
+               "#66C2A5", "#6975fe", "#feb786",
+               "#BC80BD", "#4DAF4A"),
+      pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+               
+  return(net.grph)
+}
+#
+
+co_occurrence_network_skin <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_skin[,-c(1:13)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_skin_noHelm[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val <- asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+  
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_skin_noHelm$Phylum
+  V(net.grph)$names <- tax_skin_noHelm$Phylum
+ 
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#1c4585",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#4DAF4A",V(net.grph)$color)
+  V(net.grph)$color=gsub("Acidobacteriota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Patescibacteria","#feb786",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Armatimonadota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deinococcota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Chloroflexi","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#FFED6F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("WPS-2","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Abditibacteriota","#f2579c",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bdellovibrionota","#FFD92F",V(net.grph)$color)
+
+  edgew <- E(net.grph)$weight
+ 
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+  legend(x=-2.5, y=1.1,
+       c("Proteobacteria","Bacteroidota","Actinobacteriota","Acidobacteriota",
+         "Firmicutes","Myxococcota","Patescibacteria","Verrucomicrobiota",
+         "Armatimonadota","Deinococcota","Chloroflexi","Planctomycetota",
+         "Cyanobacteria","WPS-2","Abditibacteriota","Bdellovibrionota"),
+       col = c("#386CB0","#1c4585","#4DAF4A","#B3DE69","#B3CDE3","#0a4f4e",
+              "#feb786","#7570B3","#A65628","#66C2A5","#6975fe","#FFED6F",
+              "#BC80BD","#CAB2D6","#f2579c","#FFD92F"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+
+co_occurrence_network_skinCont <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_skinCont[,-c(1:7)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_skin_noHelmCont[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val = asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+  
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_skin_noHelmCont$Phylum
+  V(net.grph)$names <- tax_skin_noHelmCont$Phylum
+ 
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#1c4585",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#4DAF4A",V(net.grph)$color)
+  V(net.grph)$color=gsub("Acidobacteriota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Armatimonadota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#FFED6F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("WPS-2","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bdellovibrionota","#FFD92F",V(net.grph)$color)
+
+  edgew <- E(net.grph)$weight
+ 
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+  legend(x=-2.5, y=1.1,
+       c("Proteobacteria","Bacteroidota","Actinobacteriota","Acidobacteriota",
+         "Firmicutes","Myxococcota","Verrucomicrobiota",
+         "Armatimonadota","Planctomycetota",
+         "Cyanobacteria","WPS-2","Bdellovibrionota"),
+       col = c("#386CB0","#1c4585","#4DAF4A","#B3DE69","#B3CDE3","#0a4f4e",
+              "#7570B3","#A65628","#FFED6F",
+              "#BC80BD","#CAB2D6","#FFD92F"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+
+co_occurrence_network_skinFrag <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_skinFrag[,-c(1:7)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_skin_noHelmFrag[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val = asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+  
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_skin_noHelmFrag$Phylum
+  V(net.grph)$names <- tax_skin_noHelmFrag$Phylum
+ 
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#1c4585",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#4DAF4A",V(net.grph)$color)
+  V(net.grph)$color=gsub("Acidobacteriota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Patescibacteria","#feb786",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Armatimonadota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deinococcota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Chloroflexi","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#FFED6F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("WPS-2","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Abditibacteriota","#f2579c",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bdellovibrionota","#FFD92F",V(net.grph)$color)
+
+  edgew <- E(net.grph)$weight
+ 
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+  legend(x=-2.5, y=1.1,
+       c("Proteobacteria","Bacteroidota","Actinobacteriota","Acidobacteriota",
+         "Firmicutes","Myxococcota","Patescibacteria","Verrucomicrobiota",
+         "Armatimonadota","Deinococcota","Chloroflexi","Planctomycetota",
+         "Cyanobacteria","WPS-2","Abditibacteriota","Bdellovibrionota"),
+       col = c("#386CB0","#1c4585","#4DAF4A","#B3DE69","#B3CDE3","#0a4f4e",
+              "#feb786","#7570B3","#A65628","#66C2A5","#6975fe","#FFED6F",
+              "#BC80BD","#CAB2D6","#f2579c","#FFD92F"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+
+co_occurrence_network_skin_wHelm <- function(data, tax, p.cutoff, dist.cutoff, layout){
+  
+  asv.table <- asv_table_skin[,-c(1:7)]
+  asv.cor <- rcorr(as.matrix(asv.table), type="pearson")
+  asv.pval <- forceSymmetric(asv.cor$P)
+  asv.pval <- p.adjust(asv.pval, method="BH")
+  sel.tax <-tax_skin[rownames(asv.pval),,drop=FALSE]
+  all.equal(rownames(sel.tax), rownames(asv.pval))
+  p.yes <- asv.pval < p.cutoff
+  r.val = asv.cor$r # select all the correlation values
+  p.yes.r <- r.val*p.yes # only select correlation values based on p-value criterion 
+  p.yes.r <- abs(p.yes.r) > dist.cutoff # output is logical vector
+  p.yes.rr <- p.yes.r*r.val # use logical vector for subscripting
+  adjm<-as.matrix(p.yes.rr)
+  colnames(adjm)<-as.vector(sel.tax$Taxon)
+  rownames(adjm)<-as.vector(sel.tax$Taxon)
+  
+  net.grph = graph.adjacency(adjm,mode="undirected",
+                             weighted=TRUE,
+                             diag=FALSE)
+  
+  #AESTHETICS
+  V(net.grph)$color <- tax_skin$Phylum
+  V(net.grph)$names <- tax_skin$Phylum
+  V(net.grph)$shape <- tax_skin$Domain
+
+  V(net.grph)$color=gsub("Nematoda","#E41A1C",V(net.grph)$color)
+  V(net.grph)$color=gsub("Proteobacteria","#386CB0",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bacteroidota","#1c4585",V(net.grph)$color)
+  V(net.grph)$color=gsub("Actinobacteriota","#4DAF4A",V(net.grph)$color)
+  V(net.grph)$color=gsub("Acidobacteriota","#B3DE69",V(net.grph)$color)
+  V(net.grph)$color=gsub("Firmicutes","#B3CDE3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Myxococcota","#0a4f4e",V(net.grph)$color)
+  V(net.grph)$color=gsub("Patescibacteria","#feb786",V(net.grph)$color)
+  V(net.grph)$color=gsub("Verrucomicrobiota","#7570B3",V(net.grph)$color)
+  V(net.grph)$color=gsub("Armatimonadota","#A65628",V(net.grph)$color)
+  V(net.grph)$color=gsub("Deinococcota","#66C2A5",V(net.grph)$color)
+  V(net.grph)$color=gsub("Chloroflexi","#6975fe",V(net.grph)$color)
+  V(net.grph)$color=gsub("Planctomycetota","#FFED6F",V(net.grph)$color)
+  V(net.grph)$color=gsub("Cyanobacteria","#BC80BD",V(net.grph)$color)
+  V(net.grph)$color=gsub("WPS-2","#CAB2D6",V(net.grph)$color)
+  V(net.grph)$color=gsub("Abditibacteriota","#f2579c",V(net.grph)$color)
+  V(net.grph)$color=gsub("Bdellovibrionota","#FFD92F",V(net.grph)$color)
+  
+  V(net.grph)$shape=gsub("Cosmocercidae","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Oxyascaris similis","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Raillietinema sp.","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Oswaldocruzia subauricularis","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Ochoterenella sp","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Rhabdias sp","csquare",V(net.grph)$shape)
+  V(net.grph)$shape=gsub("Bacteria","circle",V(net.grph)$shape)
+
+  edgew <- E(net.grph)$weight
+  #label1 <- tax_gut$Species
+
+  net_FC <- plot(net.grph,
+  edge.width = as.integer(cut(abs(edgew), breaks = 2)),
+  edge.color = ifelse(edgew<0,"deepskyblue3","orange"),
+  edge.curved = 0.2,
+  vertex.size = 4,
+  vertex.frame.width = 0,
+  vertex.label = NA,
+  vertex.label.color = "black",
+  vertex.label.family = "Arial",
+  vertex.label.font = 1,
+  vertex.label.cex = 0.5,
+  layout = layout)
+ 
+    legend(x=-2.5, y=1.1,
+       c("Nematoda","Proteobacteria","Bacteroidota","Actinobacteriota","Acidobacteriota",
+         "Firmicutes","Myxococcota","Patescibacteria","Verrucomicrobiota",
+         "Armatimonadota","Deinococcota","Chloroflexi","Planctomycetota",
+         "Cyanobacteria","WPS-2","Abditibacteriota","Bdellovibrionota"),
+       col = c("#E41A1C","#386CB0","#1c4585","#4DAF4A","#B3DE69","#B3CDE3","#0a4f4e",
+              "#feb786","#7570B3","#A65628","#66C2A5","#6975fe","#FFED6F",
+              "#BC80BD","#CAB2D6","#f2579c","#FFD92F"),
+       pch=20, pt.cex=1.8, cex=0.8, bty="n", ncol=1)
+ 
+  return(net.grph)
+}
+#
+```
+
+## Random network function
+
+```{r random network function}
+
+co_occurrence_network_random <- function(data){
+  
+  n <- vcount(data) # Counts the number of nodes in the network
+  e <- ecount(data) # Counts the number of edges in the network
+  
+  for (i in 1:1000) { 
+  net.grph <- erdos.renyi.game(n, e,'gnm', directed = FALSE)
+  } #generate 1000 random networks (equal probability for each edge)
+  
+  return(net.grph)
+}
+```
+
+## Network attributes function
+
+```{r network attributes function}
+
+net.attributes <- function(network){
+  # Number of edges
+  edges <- ecount(network)
+
+  # Number of vertices
+  vertices <- vcount(network)
+ 
+  # Modularity
+  c <- cluster_walktrap(network)
+  modularity <- modularity(network, membership(c), weights = NULL)
+
+  # Transistivity/clustering coefficient
+  avg.clust.coeff <- transitivity(network, vids = NULL,
+                    weights = NULL, type = "average")
+ 
+  # Average path length
+  avg.path.length <- average.path.length(network, directed=FALSE, unconnected=TRUE, weights=NA)
+  
+  # Graph density
+  graph.density  <- graph.density(network, loops=FALSE)
+ 
+  # Network diameter
+  net.diam  <- diameter(network, directed = FALSE, unconnected = TRUE, weights = NA)
+  
+  # Average node degree
+  node.degree <- degree(network, v = V(network), mode="all")
+  avg.degree  <- mean(node.degree)
+
+  global.topology <- data.frame(edges, vertices, modularity,
+                                avg.clust.coeff, avg.path.length,
+                                graph.density, net.diam, avg.degree)
+  return(global.topology)
+}
+```
+
+## Node topology function
+
+```{r node topology function}
+
+node.attributes <- function(network){
+  betweenness.centrality <- betweenness(network, v=V(network),
+                                        directed = FALSE, weights = NA,
+                                        normalized = FALSE)
+
+  closeness.centrality <- closeness(network, vids = V(network),
+                                    weights = NA, normalized = FALSE)
+  
+  node.transitivity <- transitivity(network, type = c("local"), vids = NULL,
+                                    weights = NA)
+
+  node.topology <- data.frame(betweenness.centrality, closeness.centrality, node.transitivity)
+  
+  return(node.topology)
+}
+```
+
+## Run the co-occurrence networks
+### Gut networks
+
+```{r Gut co-occurence networks}
+# Combined gut network
+network_gut <- co_occurrence_network_gut(asv_table_gut, tax_gut_noHelm, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_gut <- net.attributes(network_gut)
+na_gut
+#write.csv(na_gut, file="Global_topology_BFGut.csv")
+
+## Calculate node topology
+nt_gut <- node.attributes(network_gut)
+#write.csv(nt_gut, file="Node_topology_BFGut.csv")
+
+
+# Random gut network
+random_network_gut <- co_occurrence_network_random(network_gut)
+
+na_Random_gut <- net.attributes(random_network_gut)
+na_Random_gut
+#write.csv(na_Random_gut, file="Global_topology_RandomGut.csv")
+
+```
+
+```{r Gut Continuous co-occurence networks}
+# Gut (Continuous) network
+network_gutCont <- co_occurrence_network_gutCont(asv_table_gutCont, tax_gut_noHelmCont, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_gutCont <- net.attributes(network_gutCont)
+na_gutCont
+#write.csv(na_gutCont, file="Global_topology_BFGutCont.csv")
+
+## Calculate node topology
+nt_gutCont <- node.attributes(network_gutCont)
+#write.csv(nt_gutCont, file="Node_topology_BFGutCont.csv")
+
+
+# Random network
+random_network_gutCont <- co_occurrence_network_random(network_gutCont)
+
+na_Random_gutCont <- net.attributes(random_network_gutCont)
+na_Random_gutCont
+#write.csv(na_Random_gutCont, file="Global_topology_RandomGutCont.csv")
+
+```
+
+```{r Gut Fragment co-occurence networks}
+# Gut (Fragment) network
+network_gutFrag <- co_occurrence_network_gutFrag(asv_table_gutFrag, tax_gut_noHelmFrag, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_gutFrag <- net.attributes(network_gutFrag)
+na_gutFrag
+#write.csv(na_gutFrag, file="Global_topology_BFGutFrag.csv")
+
+## Calculate node topology
+nt_gutFrag <- node.attributes(network_gutFrag)
+#write.csv(nt_gutFrag, file="Node_topology_BFGutFrag.csv")
+
+
+# Random network
+random_network_gutFrag <- co_occurrence_network_random(network_gutFrag)
+
+na_Random_gutFrag <- net.attributes(random_network_gutFrag)
+na_Random_gutFrag
+#write.csv(na_Random_gutFrag, file="Global_topology_RandomGutFrag.csv")
+
+```
+
+```{r Gut including helminths co-occurence networks}
+# Gut network with helminths
+network_gut_wHelm <- co_occurrence_network_gut_wHelm(asv_table_gut, tax_gut, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_gut_wHelm <- net.attributes(network_gut_wHelm)
+na_gut_wHelm
+#write.csv(na_gut_wHelm, file="Global_topology_BFGutwHelm.csv")
+
+## Calculate node topology
+nt_gutwHelm <- node.attributes(network_gut_wHelm)
+#write.csv(nt_gutwHelm, file="Node_topology_BFGutwHelm.csv")
+
+
+# Random network
+random_network_gutwHelm  <- co_occurrence_network_random(network_gut_wHelm)
+
+na_Random_gutwHelm <- net.attributes(random_network_gutwHelm)
+na_Random_gutwHelm
+#write.csv(na_Random_gutwHelm, file="Global_topology_RandomGutwHelm.csv")
+
+```
+
+### Skin networks
+
+```{r Skin co-occurence networks}
+# Combined skin network
+network_skin <- co_occurrence_network_skin(asv_table_skin, tax_skin_noHelm, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_skin <- net.attributes(network_skin)
+na_skin
+#write.csv(na_skin, file="Global_topology_BFSkin.csv")
+
+## Calculate node topology
+nt_skin <- node.attributes(network_skin)
+#write.csv(nt_skin, file="Node_topology_BFSkin.csv")
+
+
+# Random network
+random_network_skin <- co_occurrence_network_random(network_skin)
+
+na_Random_skin <- net.attributes(random_network_skin)
+na_Random_skin
+#write.csv(na_Random_skin, file="Global_topology_RandomSkin.csv")
+
+```
+
+```{r Skin Continuous co-occurence networks}
+# Skin (Continuous) network
+network_skinCont <- co_occurrence_network_skinCont(asv_table_skinCont, tax_skin_noHelmCont, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_skinCont <- net.attributes(network_skinCont)
+na_skinCont
+#write.csv(na_skinCont, file="Global_topology_BFSkinCont.csv")
+
+## Calculate node topology
+nt_skinCont <- node.attributes(network_skinCont)
+#write.csv(nt_skinCont, file="Node_topology_BFSkinCont.csv")
+
+
+# Random network
+random_network_skinCont <- co_occurrence_network_random(network_skinCont)
+
+na_Random_skinCont <- net.attributes(random_network_skinCont)
+na_Random_skinCont
+#write.csv(na_Random_skinCont, file="Global_topology_RandomSkinCont.csv")
+
+```
+
+```{r Skin Fragment co-occurence networks}
+# Skin (Fragment) network
+network_skinFrag <- co_occurrence_network_skinFrag(asv_table_skinFrag, tax_skin_noHelmFrag, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_skinFrag <- net.attributes(network_skinFrag)
+na_skinFrag
+#write.csv(na_skinFrag, file="Global_topology_BFSkinFrag.csv")
+
+## Calculate node topology
+nt_skinFrag <- node.attributes(network_skinFrag)
+#write.csv(nt_skinFrag, file="Node_topology_BFSkinFrag.csv")
+
+
+# Random network
+random_network_skinFrag <- co_occurrence_network_random(network_skinFrag)
+
+na_Random_skinFrag <- net.attributes(random_network_skinFrag)
+na_Random_skinFrag
+#write.csv(na_Random_skinFrag, file="Global_topology_RandomSkinFrag.csv")
+
+```
+
+```{r Skin including helminths co-occurence networks}
+# Skin network with helminths
+network_skin_wHelm <- co_occurrence_network_skin_wHelm(meta_Bfskin, tax_skin, 0.05, 0.6, layout_with_fr)
+
+## Calculate network attributes
+na_skin_wHelm <- net.attributes(network_skin_wHelm)
+na_skin_wHelm
+#write.csv(na_skin_wHelm, file="Global_topology_BFSkinwHelm.csv")
+
+## Calculate node topology
+nt_skinwHelm <- node.attributes(network_skin_wHelm)
+#write.csv(nt_skinwHelm, file="Node_topology_BFSkinwHelm.csv")
+
+
+# Random network
+random_network_skinwHelm  <- co_occurrence_network_random(network_skin_wHelm)
+
+na_Random_skinwHelm <- net.attributes(random_network_skinwHelm)
+na_Random_skinwHelm
+#write.csv(na_Random_skinwHelm, file="Global_topology_RandomSkinwHelm.csv")
+
+```
